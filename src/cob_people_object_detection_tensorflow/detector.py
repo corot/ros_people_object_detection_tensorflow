@@ -106,15 +106,15 @@ class Detector(object):
 
         # Set the number of workers of TensorFlow
         if self._num_workers == -1:
-            self._sess = tf.Session(graph=self._detection_graph)
+            session_conf = tf.compat.v1.ConfigProto()
         else:
-            session_conf = tf.ConfigProto(
+            session_conf = tf.compat.v1.ConfigProto(
                 intra_op_parallelism_threads=self._num_workers,
                 inter_op_parallelism_threads=self._num_workers,
             )
-
-            self._sess = tf.Session(graph=self._detection_graph,
-                config=session_conf)
+        session_conf.gpu_options.per_process_gpu_memory_fraction = 0.2
+        session_conf.gpu_options.allow_growth = True
+        self._sess = tf.compat.v1.Session(graph=self._detection_graph, config=session_conf)
 
 
     def detect(self, image):
@@ -129,7 +129,7 @@ class Detector(object):
         """
         with self._detection_graph.as_default():
          # Get handles to input and output tensors
-            ops = tf.get_default_graph().get_operations()
+            ops = tf.compat.v1.get_default_graph().get_operations()
             all_tensor_names = {output.name for op in ops for output in op.outputs}
             tensor_dict = {}
             for key in [
@@ -138,7 +138,7 @@ class Detector(object):
                ]:
                 tensor_name = key + ':0'
                 if tensor_name in all_tensor_names:
-                     tensor_dict[key] = tf.get_default_graph().get_tensor_by_name(
+                     tensor_dict[key] = tf.compat.v1.get_default_graph().get_tensor_by_name(
                      tensor_name)
             if 'detection_masks' in tensor_dict:
                 # The following processing is only for single image
@@ -155,7 +155,7 @@ class Detector(object):
                 # Follow the convention by adding back the batch dimension
                 tensor_dict['detection_masks'] = tf.expand_dims(
                     detection_masks_reframed, 0)
-            image_tensor = tf.get_default_graph().get_tensor_by_name('image_tensor:0')
+            image_tensor = tf.compat.v1.get_default_graph().get_tensor_by_name('image_tensor:0')
 
             start = time.time()
 

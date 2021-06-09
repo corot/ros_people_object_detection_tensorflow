@@ -26,6 +26,7 @@ DESCRIPTOR = _descriptor.FileDescriptor(
   serialized_pb=_b('\n&object_detection/protos/pipeline.proto\x12\x17object_detection.protos\x1a\"object_detection/protos/eval.proto\x1a*object_detection/protos/input_reader.proto\x1a#object_detection/protos/model.proto\x1a#object_detection/protos/train.proto\"\xd5\x02\n\x17TrainEvalPipelineConfig\x12\x36\n\x05model\x18\x01 \x01(\x0b\x32\'.object_detection.protos.DetectionModel\x12:\n\x0ctrain_config\x18\x02 \x01(\x0b\x32$.object_detection.protos.TrainConfig\x12@\n\x12train_input_reader\x18\x03 \x01(\x0b\x32$.object_detection.protos.InputReader\x12\x38\n\x0b\x65val_config\x18\x04 \x01(\x0b\x32#.object_detection.protos.EvalConfig\x12?\n\x11\x65val_input_reader\x18\x05 \x01(\x0b\x32$.object_detection.protos.InputReader*\t\x08\xe8\x07\x10\x80\x80\x80\x80\x02')
   ,
   dependencies=[object__detection_dot_protos_dot_eval__pb2.DESCRIPTOR,object__detection_dot_protos_dot_input__reader__pb2.DESCRIPTOR,object__detection_dot_protos_dot_model__pb2.DESCRIPTOR,object__detection_dot_protos_dot_train__pb2.DESCRIPTOR,])
+_sym_db.RegisterFileDescriptor(DESCRIPTOR)
 
 
 
@@ -94,7 +95,6 @@ _TRAINEVALPIPELINECONFIG.fields_by_name['train_input_reader'].message_type = obj
 _TRAINEVALPIPELINECONFIG.fields_by_name['eval_config'].message_type = object__detection_dot_protos_dot_eval__pb2._EVALCONFIG
 _TRAINEVALPIPELINECONFIG.fields_by_name['eval_input_reader'].message_type = object__detection_dot_protos_dot_input__reader__pb2._INPUTREADER
 DESCRIPTOR.message_types_by_name['TrainEvalPipelineConfig'] = _TRAINEVALPIPELINECONFIG
-_sym_db.RegisterFileDescriptor(DESCRIPTOR)
 
 TrainEvalPipelineConfig = _reflection.GeneratedProtocolMessageType('TrainEvalPipelineConfig', (_message.Message,), dict(
   DESCRIPTOR = _TRAINEVALPIPELINECONFIG,

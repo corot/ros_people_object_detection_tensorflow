@@ -123,7 +123,7 @@ class PeopleObjectDetectionNode(object):
         """
         try:
             # Convert image to numpy array
-            cv_image = self._bridge.imgmsg_to_cv2(data, "bgr8")
+            cv_image = self._bridge.imgmsg_to_cv2(data, data.encoding)
 
             # Detect
             (output_dict, category_index) = \
@@ -142,7 +142,7 @@ class PeopleObjectDetectionNode(object):
             # Convert numpy image into sensor img
             msg_im = \
                 self._bridge.cv2_to_imgmsg(\
-                image_processed, encoding="passthrough")
+                image_processed, data.encoding)
 
             # Publish the messages
             self.pub_detections.publish(msg)
