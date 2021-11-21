@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 A ROS node to detect objects via TensorFlow Object Detection API.
 

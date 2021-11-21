@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 A ROS node to get 3D values of bounding boxes returned by face_recognizer node.
 
