@@ -42,6 +42,7 @@
   <buildtool_depend>catkin</buildtool_depend>
   <build_depend>rospy</build_depend>
 
+  <depend>cob_perception_common</depend>
   <depend>cob_perception_msgs</depend>
   <depend>cv_bridge</depend>
   <depend>sensor_msgs</depend>
