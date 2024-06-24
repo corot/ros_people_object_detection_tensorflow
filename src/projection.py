@@ -23,6 +23,37 @@ from sensor_msgs.msg import Image
 from cob_perception_msgs.msg import DetectionArray
 
 
+import cv2
+
+
+def segment_foreground(depth_image, depth_threshold=1000):
+    """
+    Segments the foreground from a depth image.
+
+    Args:
+        depth_image (numpy.ndarray): The input depth image.
+        depth_threshold (int): The depth value to separate foreground from background.
+
+    Returns:
+        numpy.ndarray: The depth image with foreground kept and background set to NaN.
+    """
+
+    # Create a mask for the foreground
+    _, foreground_mask = cv2.threshold(depth_image, depth_threshold, 255, cv2.THRESH_BINARY_INV)
+    foreground_mask = foreground_mask.astype(np.uint8)
+
+    # Remove noise and fill holes using morphological operations
+    kernel = np.ones((5, 5), np.uint8)
+    foreground_mask = cv2.morphologyEx(foreground_mask, cv2.MORPH_CLOSE, kernel)
+    foreground_mask = cv2.morphologyEx(foreground_mask, cv2.MORPH_OPEN, kernel)
+
+    # Create an output image and set background to NaN
+    output_depth = np.full_like(depth_image, np.nan, dtype=np.float32)
+    output_depth[foreground_mask == 255] = depth_image[foreground_mask == 255]
+
+    return output_depth
+
+
 class ProjectionNode(object):
     """Get 3D values of bounding boxes returned by face_recognizer node.
 
@@ -33,6 +64,7 @@ class ProjectionNode(object):
     cy (Int): Principle Point Vertical
 
     """
+
     def __init__(self):
         super(ProjectionNode, self).__init__()
 
@@ -41,25 +73,18 @@ class ProjectionNode(object):
 
         self._bridge = CvBridge()
 
-        (depth_topic, face_topic, output_topic, f, cx, cy) = \
-            self.get_parameters()
+        (depth_topic, face_topic, output_topic, f, cx, cy) = self.get_parameters()
 
-         # Subscribe to the face positions
-        sub_obj = message_filters.Subscriber(face_topic,\
-            DetectionArray)
+        # Subscribe to the face positions
+        sub_obj = message_filters.Subscriber(face_topic, DetectionArray)
 
-        sub_depth = message_filters.Subscriber(depth_topic,\
-            Image)
+        sub_depth = message_filters.Subscriber(depth_topic, Image)
 
         # Advertise the result of Face Depths
-        self.pub = rospy.Publisher(output_topic, \
-            DetectionArray, queue_size=1)
+        self.pub = rospy.Publisher(output_topic, DetectionArray, queue_size=1)
 
         # Create the message filter
-        ts = message_filters.ApproximateTimeSynchronizer(\
-            [sub_obj, sub_depth], \
-            2, \
-            0.9)
+        ts = message_filters.ApproximateTimeSynchronizer([sub_obj, sub_depth], 2, 0.9)
 
         ts.registerCallback(self.detection_callback)
 
@@ -69,7 +94,6 @@ class ProjectionNode(object):
 
         # spin
         rospy.spin()
-
 
     def shutdown(self):
         """
@@ -84,10 +108,10 @@ class ProjectionNode(object):
         Args:
         msg (cob_perception_msgs/DetectionArray): detections array
         depth (sensor_msgs/PointCloud2): depth image from camera
-
         """
 
         cv_depth = self._bridge.imgmsg_to_cv2(depth, "passthrough")
+        fg_depth = segment_foreground(cv_depth)
 
         # get the number of detections
         no_of_detections = len(msg.detections)
@@ -97,7 +121,6 @@ class ProjectionNode(object):
         # Check if there is a detection
         if no_of_detections > 0:
             for i, detection in enumerate(msg.detections):
-
                 x = detection.mask.roi.x
                 y = detection.mask.roi.y
                 width = detection.mask.roi.width
@@ -111,12 +134,11 @@ class ProjectionNode(object):
                 height -= 2 * clip_y
 
                 cv_depth_bounding_box = cv_depth[y:y + height, x:x + width]
-#                cv_depth_bounding_box = cv_depth[y + 50:y + (height - 50), x + 50:x + (width - 50)]
+                #                cv_depth_bounding_box = cv_depth[y + 50:y + (height - 50), x + 50:x + (width - 50)]
 
                 try:
 
-                    depth_mean = np.nanmedian(\
-                       cv_depth_bounding_box[np.nonzero(cv_depth_bounding_box)])
+                    depth_mean = np.nanmedian(cv_depth_bounding_box[np.nonzero(cv_depth_bounding_box)])
 
                     # real_x = (x + width/2-self.cx)*(depth_mean*0.001)/self.f
                     #
@@ -126,9 +148,9 @@ class ProjectionNode(object):
                     # msg.detections[i].pose.pose.position.y = real_y
                     # msg.detections[i].pose.pose.position.z = depth_mean*0.001
 
-                    real_x = (x + width/2-self.cx)*(depth_mean)/self.f
+                    real_x = (x + width / 2 - self.cx) * depth_mean / self.f
 
-                    real_y = (y + height/2-self.cy)*(depth_mean)/self.f
+                    real_y = (y + height / 2 - self.cy) * depth_mean / self.f
 
                     msg.detections[i].pose.header = detection.header
                     msg.detections[i].pose.pose.position.x = real_x
@@ -155,20 +177,21 @@ class ProjectionNode(object):
             cy (Int): Principle Point Vertical
         """
 
-        depth_topic  = rospy.get_param("/cob_object_projection/depth_topic")
+        depth_topic = rospy.get_param("/cob_object_projection/depth_topic")
         face_topic = rospy.get_param('/cob_object_projection/face_topic')
         output_topic = rospy.get_param('/cob_object_projection/output_topic')
         f = rospy.get_param('/cob_object_projection/focal_length')
         cx = rospy.get_param('/cob_object_projection/cx')
         cy = rospy.get_param('/cob_object_projection/cy')
 
-        return (depth_topic, face_topic, output_topic, f, cx, cy)
+        return depth_topic, face_topic, output_topic, f, cx, cy
 
 
 def main():
     """ main function
     """
     node = ProjectionNode()
+
 
 if __name__ == '__main__':
     main()
