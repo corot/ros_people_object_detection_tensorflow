@@ -20,36 +20,68 @@ from cv_bridge import CvBridge
 
 from sensor_msgs.msg import Image
 
-from cob_perception_msgs.msg import DetectionArray
-
+from cob_perception_msgs.msg import DetectionArray, Detection
 
 import cv2
+import os
 
 
-def segment_foreground(depth_image, depth_threshold=1000):
+def segment_foreground(depth_image):
     """
-    Segments the foreground from a depth image.
+    Segments the foreground from a depth image using Otsu's Method.
 
     Args:
-        depth_image (numpy.ndarray): The input depth image.
-        depth_threshold (int): The depth value to separate foreground from background.
+        depth_image (numpy.ndarray): The input depth image with floating point values.
 
     Returns:
         numpy.ndarray: The depth image with foreground kept and background set to NaN.
     """
+    # Normalize depth image to 8-bit grayscale for Otsu's method
+    depth_image_normalized = cv2.normalize(depth_image, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
-    # Create a mask for the foreground
-    _, foreground_mask = cv2.threshold(depth_image, depth_threshold, 255, cv2.THRESH_BINARY_INV)
+    # Apply Otsu's thresholding
+    _, foreground_mask = cv2.threshold(depth_image_normalized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Convert mask to binary format
     foreground_mask = foreground_mask.astype(np.uint8)
-
-    # Remove noise and fill holes using morphological operations
-    kernel = np.ones((5, 5), np.uint8)
-    foreground_mask = cv2.morphologyEx(foreground_mask, cv2.MORPH_CLOSE, kernel)
-    foreground_mask = cv2.morphologyEx(foreground_mask, cv2.MORPH_OPEN, kernel)
 
     # Create an output image and set background to NaN
     output_depth = np.full_like(depth_image, np.nan, dtype=np.float32)
-    output_depth[foreground_mask == 255] = depth_image[foreground_mask == 255]
+    output_depth[foreground_mask == 0] = depth_image[foreground_mask == 0]
+
+    return output_depth
+
+def segment_foreground_auto(depth_image):
+    """
+    Segments the foreground from a depth image using K-means clustering.
+
+    Args:
+        depth_image (numpy.ndarray): The input depth image with floating point values.
+
+    Returns:
+        numpy.ndarray: The depth image with foreground kept and background set to NaN.
+    """
+    # Flatten the depth image to a single column
+    pixels = depth_image.flatten().astype(np.float32)
+
+    # Apply K-means clustering to find two clusters (foreground and background)
+    pixels = pixels.reshape(-1, 1)
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
+    k = 2
+    _, labels, centers = cv2.kmeans(pixels, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+
+    # Determine which cluster is the foreground (closer to the camera)
+    foreground_cluster = np.argmin(centers)
+
+    # Create a mask for the foreground
+    foreground_mask = (labels.flatten() == foreground_cluster).astype(np.uint8)
+
+    # Reshape the mask back to the shape of the depth image
+    foreground_mask = foreground_mask.reshape(depth_image.shape)
+
+    # Create an output image and set background to NaN
+    output_depth = np.full_like(depth_image, np.nan, dtype=np.float32)
+    output_depth[foreground_mask == 1] = depth_image[foreground_mask == 1]
 
     return output_depth
 
@@ -69,7 +101,7 @@ class ProjectionNode(object):
         super(ProjectionNode, self).__init__()
 
         # init the node
-        rospy.init_node('projection_node', anonymous=False)
+        rospy.init_node('cob_object_projection', anonymous=False)
 
         self._bridge = CvBridge()
 
@@ -91,6 +123,15 @@ class ProjectionNode(object):
         self.f = f
         self.cx = cx
         self.cy = cy
+        # self.depth_image_path = depth_image_path
+        #
+        # d = Detection()
+        # d.mask.roi.x = 139
+        # d.mask.roi.y = 201
+        # d.mask.roi.width = 330
+        # d.mask.roi.height = 208
+        # self.detection_callback(DetectionArray(detections=[d]))
+
 
         # spin
         rospy.spin()
@@ -111,7 +152,6 @@ class ProjectionNode(object):
         """
 
         cv_depth = self._bridge.imgmsg_to_cv2(depth, "passthrough")
-        fg_depth = segment_foreground(cv_depth)
 
         # get the number of detections
         no_of_detections = len(msg.detections)
@@ -134,22 +174,23 @@ class ProjectionNode(object):
                 height -= 2 * clip_y
 
                 cv_depth_bounding_box = cv_depth[y:y + height, x:x + width]
-                #                cv_depth_bounding_box = cv_depth[y + 50:y + (height - 50), x + 50:x + (width - 50)]
+                fg_depth = segment_foreground_auto(cv_depth_bounding_box)
+                # cv2.imshow('segment', fg_depth)
+                # cv2.imshow('segment_norm', (fg_depth / 4 * 65535).astype(np.uint16))
+                # cv2.imshow('bbox', cv_depth_bounding_box)
+                #
+                # cv2.imshow('Original Depth Image',
+                #            cv2.normalize(cv_depth_bounding_box, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8))
+                # cv2.imshow('Segmented Foreground Image',
+                #            cv2.normalize(fg_depth, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8))
+                # cv2.waitKey(0)
+                # cv2.destroyAllWindows()
 
                 try:
-
-                    depth_mean = np.nanmedian(cv_depth_bounding_box[np.nonzero(cv_depth_bounding_box)])
-
-                    # real_x = (x + width/2-self.cx)*(depth_mean*0.001)/self.f
-                    #
-                    # real_y = (y + height/2-self.cy)*(depth_mean*0.001)/self.f
-                    #
-                    # msg.detections[i].pose.pose.position.x = real_x
-                    # msg.detections[i].pose.pose.position.y = real_y
-                    # msg.detections[i].pose.pose.position.z = depth_mean*0.001
+                    depth_mean = np.nanmedian(fg_depth[np.nonzero(fg_depth)])
+  #                  depth_mean = np.nanmedian(cv_depth_bounding_box[np.nonzero(cv_depth_bounding_box)])
 
                     real_x = (x + width / 2 - self.cx) * depth_mean / self.f
-
                     real_y = (y + height / 2 - self.cy) * depth_mean / self.f
 
                     msg.detections[i].pose.header = detection.header
