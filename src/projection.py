@@ -16,6 +16,8 @@ import message_filters
 
 import numpy as np
 
+from scipy.signal import find_peaks
+
 from cv_bridge import CvBridge
 
 from sensor_msgs.msg import Image
@@ -23,67 +25,83 @@ from sensor_msgs.msg import Image
 from cob_perception_msgs.msg import DetectionArray, Detection
 
 import cv2
-import os
 
 
-def segment_foreground(depth_image):
-    """
-    Segments the foreground from a depth image using Otsu's Method.
+def get_centroid(mask):
+    # Calculate moments of the binary image
+    M = cv2.moments(mask)
 
-    Args:
-        depth_image (numpy.ndarray): The input depth image with floating point values.
+    # Calculate x,y coordinate of the centroid
+    if M['m00'] != 0:
+        cx = int(M['m10'] / M['m00'])
+        cy = int(M['m01'] / M['m00'])
+    else:
+        cx, cy = 0, 0
 
-    Returns:
-        numpy.ndarray: The depth image with foreground kept and background set to NaN.
-    """
-    # Normalize depth image to 8-bit grayscale for Otsu's method
-    depth_image_normalized = cv2.normalize(depth_image, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    return cx, cy
 
-    # Apply Otsu's thresholding
-    _, foreground_mask = cv2.threshold(depth_image_normalized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Convert mask to binary format
-    foreground_mask = foreground_mask.astype(np.uint8)
+from matplotlib import pyplot as plt
+def foreground_mask(depth_img):
+    # Calculate the histogram
+    histogram = cv2.calcHist([depth_img], [0], None, [256], [0, 256])
 
-    # Create an output image and set background to NaN
-    output_depth = np.full_like(depth_image, np.nan, dtype=np.float32)
-    output_depth[foreground_mask == 0] = depth_image[foreground_mask == 0]
+    # Smooth the histogram to find peaks with a stronger Gaussian filter
+    smooth_histogram = cv2.GaussianBlur(histogram, (15, 15), 0)
 
-    return output_depth
+    # Find the first peak in the smoothed histogram
+#    first_peak_value = np.argmax(smooth_histogram).item()
+    peaks, _ = find_peaks(smooth_histogram.flatten(), height=250)
+    first_peak_value = peaks[0].item() if len(peaks) > 0 else 0
 
-def segment_foreground_auto(depth_image):
-    """
-    Segments the foreground from a depth image using K-means clustering.
+    # Find the start of the first peak
+    # The start of the peak is the point before the peak where the histogram value starts to rise significantly
+    start_of_first_peak = 0
+    for i in range(first_peak_value, 0, -1):
+        if smooth_histogram[i] < 0.25 * smooth_histogram[first_peak_value]:
+            start_of_first_peak = i
+            break
 
-    Args:
-        depth_image (numpy.ndarray): The input depth image with floating point values.
+    # Find the end of the first peak
+    # The end of the peak is the point after the peak where the histogram value drops significantly
+    end_of_first_peak = first_peak_value
+    for i in range(first_peak_value, len(smooth_histogram)):
+        if smooth_histogram[i] < 0.25 * smooth_histogram[first_peak_value]:
+            end_of_first_peak = i
+            break
 
-    Returns:
-        numpy.ndarray: The depth image with foreground kept and background set to NaN.
-    """
-    # Flatten the depth image to a single column
-    pixels = depth_image.flatten().astype(np.float32)
+    # Apply the threshold using the first peak and its end
+    try:
+        fg_mask = cv2.inRange(depth_img, start_of_first_peak, end_of_first_peak)
+    except TypeError as e:
+        print(str(e))
+        pass
+    # fg_mask = cv2.threshold(depth_img, start_of_first_peak, 255, cv2.THRESH_TOZERO)[1]
+    # fg_mask = cv2.threshold(fg_mask, end_of_first_peak, 255, cv2.THRESH_TOZERO_INV)[1]
+    #
+    # # Display the results
+    # plt.figure(figsize=(10, 5))
+    #
+    # plt.subplot(1, 2, 1)
+    # plt.imshow(depth_img, cmap='gray')
+    # plt.title('Original Depth Image')
+    # plt.axis('off')
+    #
+    # plt.subplot(1, 2, 2)
+    # plt.plot(histogram, color='orange', label='Original Histogram')
+    # plt.plot(smooth_histogram, color='blue', label='Smoothed Histogram')
+    # plt.axvline(x=start_of_first_peak, color='r', linestyle='--', label=f'First Peak Start: {start_of_first_peak}')
+    # plt.axvline(x=end_of_first_peak, color='g', linestyle='--', label=f'First Peak End: {end_of_first_peak}')
+    # plt.title('Histogram with Threshold Range')
+    # plt.xlabel('Pixel Value')
+    # plt.ylabel('Frequency')
+    # plt.legend()
+    # plt.grid(True)
+    #
+    # plt.tight_layout()
+    # plt.show()
 
-    # Apply K-means clustering to find two clusters (foreground and background)
-    pixels = pixels.reshape(-1, 1)
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
-    k = 2
-    _, labels, centers = cv2.kmeans(pixels, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
-
-    # Determine which cluster is the foreground (closer to the camera)
-    foreground_cluster = np.argmin(centers)
-
-    # Create a mask for the foreground
-    foreground_mask = (labels.flatten() == foreground_cluster).astype(np.uint8)
-
-    # Reshape the mask back to the shape of the depth image
-    foreground_mask = foreground_mask.reshape(depth_image.shape)
-
-    # Create an output image and set background to NaN
-    output_depth = np.full_like(depth_image, np.nan, dtype=np.float32)
-    output_depth[foreground_mask == 1] = depth_image[foreground_mask == 1]
-
-    return output_depth
+    return fg_mask
 
 
 class ProjectionNode(object):
@@ -123,17 +141,7 @@ class ProjectionNode(object):
         self.f = f
         self.cx = cx
         self.cy = cy
-        # self.depth_image_path = depth_image_path
-        #
-        # d = Detection()
-        # d.mask.roi.x = 139
-        # d.mask.roi.y = 201
-        # d.mask.roi.width = 330
-        # d.mask.roi.height = 208
-        # self.detection_callback(DetectionArray(detections=[d]))
 
-
-        # spin
         rospy.spin()
 
     def shutdown(self):
@@ -151,12 +159,12 @@ class ProjectionNode(object):
         depth (sensor_msgs/PointCloud2): depth image from camera
         """
 
-        cv_depth = self._bridge.imgmsg_to_cv2(depth, "passthrough")
+        depth_img = self._bridge.imgmsg_to_cv2(depth, "passthrough")
 
         # get the number of detections
         no_of_detections = len(msg.detections)
 
-        ROI_SHRINK_FRACTION = 0.5
+        FLOOR_SHRINK_FRACTION = 0.2
 
         # Check if there is a detection
         if no_of_detections > 0:
@@ -166,18 +174,18 @@ class ProjectionNode(object):
                 width = detection.mask.roi.width
                 height = detection.mask.roi.height
 
-                clip_x = int(round((width * ROI_SHRINK_FRACTION) / 2.0))
-                clip_y = int(round((height * ROI_SHRINK_FRACTION) / 2.0))
-                x += clip_x
-                y += clip_y
-                width -= 2 * clip_x
-                height -= 2 * clip_y
+                floor_rows_to_remove = int(FLOOR_SHRINK_FRACTION * height)
 
-                cv_depth_bounding_box = cv_depth[y:y + height, x:x + width]
-                fg_depth = segment_foreground_auto(cv_depth_bounding_box)
-                # cv2.imshow('segment', fg_depth)
-                # cv2.imshow('segment_norm', (fg_depth / 4 * 65535).astype(np.uint16))
-                # cv2.imshow('bbox', cv_depth_bounding_box)
+                # Crop the image by removing the bottom 10% of the rows
+                depth_img_roi = depth_img[y:y + height, x:x + width]
+#                cv2.imshow('ROI', cv2.normalize(depth_img_roi, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8))
+
+                depth_img_roi = depth_img_roi[:-floor_rows_to_remove, :]
+
+                norm_depth_img = cv2.normalize(depth_img_roi, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                fg_mask = foreground_mask(norm_depth_img)
+                # cv2.imshow('norm', norm_depth_img)
+                # cv2.imshow('mask', fg_mask)
                 #
                 # cv2.imshow('Original Depth Image',
                 #            cv2.normalize(cv_depth_bounding_box, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8))
@@ -186,21 +194,29 @@ class ProjectionNode(object):
                 # cv2.waitKey(0)
                 # cv2.destroyAllWindows()
 
-                try:
-                    depth_mean = np.nanmedian(fg_depth[np.nonzero(fg_depth)])
-  #                  depth_mean = np.nanmedian(cv_depth_bounding_box[np.nonzero(cv_depth_bounding_box)])
+                centroid_x, centroid_y = get_centroid(fg_mask)
+                #print(f'Centroid of the mask is at: ({centroid_x}, {centroid_y})')
 
-                    real_x = (x + width / 2 - self.cx) * depth_mean / self.f
-                    real_y = (y + height / 2 - self.cy) * depth_mean / self.f
+                # Visualize the centroid on the mask image
+                # output = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
+                # cv2.circle(output, (centroid_x, centroid_y), 5, (0, 0, 255), -1)
+                # cv2.imshow('Centroid', output)
+                # cv2.waitKey(0)
+                # cv2.destroyAllWindows()
+                #
+                # cv2.imwrite('mask.png', norm_depth_img)
 
-                    msg.detections[i].pose.header = detection.header
-                    msg.detections[i].pose.pose.position.x = real_x
-                    msg.detections[i].pose.pose.position.y = real_y
-                    msg.detections[i].pose.pose.position.z = depth_mean
-                    msg.detections[i].pose.pose.orientation.w = 1.0  # no information; just return a valid quaternion
+                depth_mean = depth_img_roi[centroid_y, centroid_x]
+#                  depth_mean = np.nanmedian(cv_depth_bounding_box[np.nonzero(cv_depth_bounding_box)])
 
-                except Exception as e:
-                    print(e)
+                real_x = ((x + centroid_x) - self.cx) * depth_mean / self.f
+                real_y = ((y + centroid_y) - self.cy) * depth_mean / self.f
+
+                msg.detections[i].pose.header = detection.header
+                msg.detections[i].pose.pose.position.x = real_x
+                msg.detections[i].pose.pose.position.y = real_y
+                msg.detections[i].pose.pose.position.z = depth_mean
+                msg.detections[i].pose.pose.orientation.w = 1.0  # no information; just return a valid quaternion
 
         self.pub.publish(msg)
 
@@ -231,7 +247,7 @@ class ProjectionNode(object):
 def main():
     """ main function
     """
-    node = ProjectionNode()
+    ProjectionNode()
 
 
 if __name__ == '__main__':
