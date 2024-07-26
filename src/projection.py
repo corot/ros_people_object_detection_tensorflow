@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """
-A ROS node to get 3D values of bounding boxes returned by face_recognizer node.
+A ROS node to get 3D coordinates of bounding boxes returned by object recognizer node.
 
-This node gets the face bounding boxes and gets the real world coordinates of
-them by using depth values. It simply gets the x and y values of center point
-and gets the median value of face depth values as z value of face.
+This node gets the detected objects bounding boxes and gets the real world coordinates
+by using depth values. We segment the foreground in a binary image and calculate its
+centroid. The depth at the centroid gives the z coordinate.
 
 Author:
     Cagatay Odabasi -- cagatay.odabasi@ipa.fraunhofer.de
@@ -22,7 +22,7 @@ from cv_bridge import CvBridge
 
 from sensor_msgs.msg import Image
 
-from cob_perception_msgs.msg import DetectionArray, Detection
+from cob_perception_msgs.msg import DetectionArray
 
 import cv2
 
@@ -41,18 +41,22 @@ def get_centroid(mask):
     return cx, cy
 
 
-from matplotlib import pyplot as plt
 def foreground_mask(depth_img):
     # Calculate the histogram
     histogram = cv2.calcHist([depth_img], [0], None, [256], [0, 256])
 
     # Smooth the histogram to find peaks with a stronger Gaussian filter
-    smooth_histogram = cv2.GaussianBlur(histogram, (15, 15), 0)
+    smooth_histogram = cv2.GaussianBlur(histogram, (25, 25), 0)
 
-    # Find the first peak in the smoothed histogram
-#    first_peak_value = np.argmax(smooth_histogram).item()
-    peaks, _ = find_peaks(smooth_histogram.flatten(), height=250)
-    first_peak_value = peaks[0].item() if len(peaks) > 0 else 0
+    # Find the first peak in the smoothed histogram; pad with a 0 to also include peak at minimum depth
+    smooth_histogram = np.concatenate([np.zeros(1), smooth_histogram.flatten()])
+    min_height = 100
+    peaks, _ = find_peaks(smooth_histogram, height=min_height)
+    if len(peaks) == 0:
+        highest_val = round(np.max(smooth_histogram))
+        rospy.logdebug(f"No peaks found on depth image (highest value {highest_val} < {min_height})")
+        return None
+    first_peak_value = peaks[0].item()
 
     # Find the start of the first peak
     # The start of the peak is the point before the peak where the histogram value starts to rise significantly
@@ -70,38 +74,8 @@ def foreground_mask(depth_img):
             end_of_first_peak = i
             break
 
-    # Apply the threshold using the first peak and its end
-    try:
-        fg_mask = cv2.inRange(depth_img, start_of_first_peak, end_of_first_peak)
-    except TypeError as e:
-        print(str(e))
-        pass
-    # fg_mask = cv2.threshold(depth_img, start_of_first_peak, 255, cv2.THRESH_TOZERO)[1]
-    # fg_mask = cv2.threshold(fg_mask, end_of_first_peak, 255, cv2.THRESH_TOZERO_INV)[1]
-    #
-    # # Display the results
-    # plt.figure(figsize=(10, 5))
-    #
-    # plt.subplot(1, 2, 1)
-    # plt.imshow(depth_img, cmap='gray')
-    # plt.title('Original Depth Image')
-    # plt.axis('off')
-    #
-    # plt.subplot(1, 2, 2)
-    # plt.plot(histogram, color='orange', label='Original Histogram')
-    # plt.plot(smooth_histogram, color='blue', label='Smoothed Histogram')
-    # plt.axvline(x=start_of_first_peak, color='r', linestyle='--', label=f'First Peak Start: {start_of_first_peak}')
-    # plt.axvline(x=end_of_first_peak, color='g', linestyle='--', label=f'First Peak End: {end_of_first_peak}')
-    # plt.title('Histogram with Threshold Range')
-    # plt.xlabel('Pixel Value')
-    # plt.ylabel('Frequency')
-    # plt.legend()
-    # plt.grid(True)
-    #
-    # plt.tight_layout()
-    # plt.show()
-
-    return fg_mask
+    # Apply the threshold keeping the entire peak
+    return cv2.inRange(depth_img, start_of_first_peak, end_of_first_peak)
 
 
 class ProjectionNode(object):
@@ -156,7 +130,7 @@ class ProjectionNode(object):
 
         Args:
         msg (cob_perception_msgs/DetectionArray): detections array
-        depth (sensor_msgs/PointCloud2): depth image from camera
+        depth (sensor_msgs/Image): depth image from camera
         """
 
         depth_img = self._bridge.imgmsg_to_cv2(depth, "passthrough")
@@ -176,46 +150,30 @@ class ProjectionNode(object):
 
                 floor_rows_to_remove = int(FLOOR_SHRINK_FRACTION * height)
 
-                # Crop the image by removing the bottom 10% of the rows
+                # Crop the ROI image by removing the bottom 20% of the rows
                 depth_img_roi = depth_img[y:y + height, x:x + width]
-#                cv2.imshow('ROI', cv2.normalize(depth_img_roi, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8))
-
                 depth_img_roi = depth_img_roi[:-floor_rows_to_remove, :]
 
+                # Normalize the depth image to 0 .. 255 values and extract the foreground mask
                 norm_depth_img = cv2.normalize(depth_img_roi, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
                 fg_mask = foreground_mask(norm_depth_img)
-                # cv2.imshow('norm', norm_depth_img)
-                # cv2.imshow('mask', fg_mask)
-                #
-                # cv2.imshow('Original Depth Image',
-                #            cv2.normalize(cv_depth_bounding_box, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8))
-                # cv2.imshow('Segmented Foreground Image',
-                #            cv2.normalize(fg_depth, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8))
-                # cv2.waitKey(0)
-                # cv2.destroyAllWindows()
 
-                centroid_x, centroid_y = get_centroid(fg_mask)
-                #print(f'Centroid of the mask is at: ({centroid_x}, {centroid_y})')
+                # Calculate the centroid and covert to real world coordinates
+                if fg_mask is not None:
+                    centroid_x, centroid_y = get_centroid(fg_mask)
+                else:
+                    # fallback to ROI center if we failed to extract the foreground mask
+                    centroid_x, centroid_y = width // 2, height // 2
 
-                # Visualize the centroid on the mask image
-                # output = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
-                # cv2.circle(output, (centroid_x, centroid_y), 5, (0, 0, 255), -1)
-                # cv2.imshow('Centroid', output)
-                # cv2.waitKey(0)
-                # cv2.destroyAllWindows()
-                #
-                # cv2.imwrite('mask.png', norm_depth_img)
+                centroid_depth = depth_img_roi[centroid_y, centroid_x]
 
-                depth_mean = depth_img_roi[centroid_y, centroid_x]
-#                  depth_mean = np.nanmedian(cv_depth_bounding_box[np.nonzero(cv_depth_bounding_box)])
-
-                real_x = ((x + centroid_x) - self.cx) * depth_mean / self.f
-                real_y = ((y + centroid_y) - self.cy) * depth_mean / self.f
+                real_x = ((x + centroid_x) - self.cx) * centroid_depth / self.f
+                real_y = ((y + centroid_y) - self.cy) * centroid_depth / self.f
 
                 msg.detections[i].pose.header = detection.header
                 msg.detections[i].pose.pose.position.x = real_x
                 msg.detections[i].pose.pose.position.y = real_y
-                msg.detections[i].pose.pose.position.z = depth_mean
+                msg.detections[i].pose.pose.position.z = centroid_depth
                 msg.detections[i].pose.pose.orientation.w = 1.0  # no information; just return a valid quaternion
 
         self.pub.publish(msg)
